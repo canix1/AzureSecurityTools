@@ -12,7 +12,7 @@
     A script that will globally search for objects in your Azure AD tenant and return the object and the object type
 
 .EXAMPLE
-    .\FindGlobalObjects.ps1 -TenantID "2e5097a7-4ead-42ae-82ef-c33d910626f6" -ObjectID "62e90394-69f5-4237-9190-012177145e10"
+    .\Get-AzurePrivRoleGroups.ps1 -TenantID "2e5097a7-4ead-42ae-82ef-c33d910626f6" -ObjectID "62e90394-69f5-4237-9190-012177145e10"
 
 .OUTPUTS
     Object properties with an additional property to identify the type
@@ -40,7 +40,9 @@ Param
     [String] 
     $TenantId = "fa7e80a4-187b-4a6d-8c4a-8bbb1db67c6c",
     [string]
-    $HTMLFile = "C:\temp\Doughnut.htm"
+    $HTMLFile = "C:\temp\AzureAD_Priv_Report.html",
+    [string]
+    $UserUpn
 
 
 )
@@ -668,142 +670,6 @@ function Get-AzureADIRHeader {
 
 }   #end function
 
-function Invoke-AzureADIRWebRequest {
-
-    ############################################################################
-
-    <#
-    .SYNOPSIS
-
-        Perform Invoke-WebRequest with additional error handling.
-
-
-    .DESCRIPTION
-
-        Perform Invoke-WebRequest with additional error handling for supplied
-        query URL and authentication header.
-
-        Has retry logic.
-
-    .EXAMPLE
-
-        Invoke-AzureADIRWebRequest -Header $Header -Url $Url
-
-        Calls Invoke-Webrequest with the supplied authentication header and query
-        URL with error checking and retry logic.
-
-
-    #>
-
-    ############################################################################
-
-    [CmdletBinding()]
-    param(
-
-        #The header for the API call
-        [Parameter(Mandatory,Position=0)]
-        $Header,
-
-        #the query Url 
-        [Parameter(Mandatory,Position=1)]
-        [string]$Url
-
-        )
-
-    ############################################################################
-    
-    $RetryCount = 0
-
-
-    ##################################
-    #Do our stuff with error handling
-    try {
-
-        #Invoke the web request
-        $MyReport = (Invoke-WebRequest -UseBasicParsing -Headers $Header -Uri $Url -Verbose:$false)
-
-    }
-    catch [System.Net.WebException] {
-        
-        $StatusCode = [int]$_.Exception.Response.StatusCode
-        Write-Warning -Message "$(Get-Date -f T) - $($_.Exception.Message)"
-
-        #Check what's gone wrong
-        if (($StatusCode -eq 401) -and ($OneSuccessfulFetch)) {
-
-            #Token might have expired; renew token and try again
-            $Token = (Get-AzureADIRApiToken -TenantId $TenantId -InterActive).AccessToken
-            $Header = Get-AzureADIRHeader -Token $Token
-            $OneSuccessfulFetch = $False
-
-        }
-        elseif (($StatusCode -eq 429) -or ($StatusCode -eq 504) -or ($StatusCode -eq 503)) {
-
-            #Throttled request or a temporary issue, wait for a few seconds and retry
-            Start-Sleep -Seconds 5
-
-        }
-        elseif (($StatusCode -eq 403) -or ($StatusCode -eq 401)) {
-
-            Write-Warning -Message "$(Get-Date -f T) - Please check the permissions of the user"
-            break
-
-        }
-        elseif ($StatusCode -eq 400) {
-
-            Write-Warning -Message "$(Get-Date -f T) - Please check the query used"
-            break
-
-        }
-        else {
-            
-            #Retry up to 5 times
-            if ($RetryCount -lt 5) {
-                
-                write-output "Retrying..."
-                $RetryCount++
-
-            }
-            else {
-                
-                #Write to host and exit loop
-                Write-Warning -Message "$(Get-Date -f T) - Download request failed. Please try again in the future"
-                break
-
-            }
-
-        }
-
-    }
-    catch {
-
-        #Write error details to host
-        Write-Warning -Message "$(Get-Date -f T) - $($_.Exception)"
-
-
-        #Retry up to 5 times    
-        if ($RetryCount -lt 5) {
-
-            write-output "Retrying..."
-            $RetryCount++
-
-        }
-        else {
-
-            #Write to host and exit loop
-            Write-Warning -Message "$(Get-Date -f T) - Download request failed - please try again in the future"
-            break
-
-        }
-
-    } # end try / catch
-
-
-    return $MyReport
-
-
-}   #end function
-
 function Get-RoleDefinitions {
      ############################################################################
 
@@ -987,7 +853,7 @@ function FindGlobalObject {
 
    
    if ($ResponseData) {
-       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "user"
+       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "User"
        Return $ResponseData 
    }
 
@@ -1008,7 +874,7 @@ function FindGlobalObject {
    catch {}
 
    if ($ResponseData) {
-       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "group"
+       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "Group"
        Return $ResponseData 
    }
 
@@ -1031,7 +897,7 @@ function FindGlobalObject {
 
 
    if ($ResponseData) {
-       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "group"        
+       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "Group"        
        
         Return $ResponseData 
    }
@@ -1242,7 +1108,7 @@ function Get-RoleMembers {
 
    
    if ($ResponseData) {
-       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "user"
+       add-member -InputObject $ResponseData -MemberType NoteProperty -Name "type" -Value "User"
        Return $ResponseData 
    }
 
@@ -1407,7 +1273,8 @@ function Get-PAGGroupMembers {
  #Get Owner
   
 
-  $Url = "https://graph.microsoft.com/beta/privilegedAccess/aadGroups/resources/$ObjectID/roleAssignments?"
+  $Url = 'https://graph.microsoft.com/beta/privilegedAccess/aadGroups/roleAssignments?$expand=linkedEligibleRoleAssignment,subject,roleDefinition($expand=resource)&$count=true&$filter=(roleDefinition/resource/id%20eq%20%27' + $ObjectID + '%27)&$orderby=roleDefinition/displayName'
+
   try {
 
       # Convert the content in the response from Json and expand all values
@@ -1514,7 +1381,7 @@ Function Get-TenantInformation
    }
 
 } # End Function
-$LoginToken = Get-AzureADIRApiToken -TenantId $TenantId -LoginHint $UserUpn
+$LoginToken = Get-AzureADIRApiToken -TenantId $TenantId -InterActive
 $Token =  ($LoginToken).AccessToken
 $Header = Get-AzureADIRHeader -Token $Token
 
@@ -1552,9 +1419,9 @@ foreach( $role in $Roles)
 }
 
 
-if ($RoleMembers | Where-Object{$_.Type -eq "group"})
+if ($RoleMembers | Where-Object{$_.Type -eq "Group"})
 {
-    $MemberTypeGroup = $RoleMembers | Where-Object{$_.Type -eq "group"}
+    #$MemberTypeGroup = $RoleMembers | Where-Object{$_.Type -eq "group"}
     foreach ($Group in $MemberTypeGroup)
     {
         $Owners = @(Get-GroupOwner $Token $Header $TenantID $Group.subjectId)
@@ -1592,9 +1459,9 @@ if ($RoleMembers | Where-Object{$_.Type -eq "group"})
 
 
 
-if ($RoleMembers | Where-Object{$_.Type -eq "group"})
+if ($RoleMembers | Where-Object{$_.Type -eq "Group"})
 {
-    $MemberTypeGroup = $RoleMembers | Where-Object{$_.Type -eq "group"}
+    $MemberTypeGroup = $RoleMembers | Where-Object{$_.Type -eq "Group"}
     foreach ($Group in $MemberTypeGroup)
     {
 
@@ -1602,6 +1469,7 @@ if ($RoleMembers | Where-Object{$_.Type -eq "group"})
         if($Group.isAssignableToRole -eq "true")
         {
           $GroupMembers = Get-PAGGroupMembers $Token $Header $TenantID $GroupID
+          
         }
         else {
           $GroupMembers = Get-GroupMembers $Token $Header $TenantID $GroupID
@@ -1629,18 +1497,15 @@ if ($RoleMembers | Where-Object{$_.Type -eq "group"})
                 }
                 else
                 {
-                    Add-Member -InputObject $OwnerObject -MemberType NoteProperty -Name UserPrincipalName $GroupMemberProperties.userPrincipalName
+                    Add-Member -InputObject $GroupMemberObject -MemberType NoteProperty -Name UserPrincipalName $GroupMemberProperties.userPrincipalName
                 }
                 $GroupMemberObject.subjectId = $GroupMemberid
                 $GroupMemberObject.displayName = $GroupMemberProperties.displayName
                 $GroupMemberObject.startDateTime = $null
                 $GroupMemberObject.endDateTime = $null                
-                if($GroupMember.'@odata.type' )
-                {
-                  $GroupMemberObject.Type = $GroupMember.'@odata.type'.split(".")[-1]                                  
-                }
+                $GroupMemberObject.Type = $GroupMember.subject.type                               
                 $GroupMemberObject.Status = $null                   
-                $GroupMemberObject.memberType = "Nested"
+                $GroupMemberObject.memberType = $GroupMember.roleDefinition.displayName
                 if($GroupMemberProperties.isAssignableToRole )
                 {
                 $GroupMemberObject.isAssignableToRole = $GroupMemberProperties.isAssignableToRole                                
@@ -2228,14 +2093,16 @@ Foreach ($RoleName in $RoleNames)
     #Add Role Name in Header
     $strHTMLGraphs = "<h1><font color='$strFontColor'>$RoleName</font></h1>`n"
 
+    # create array with assignments
     $AssignmentData = New-Object PSCustomObject
     Add-Member -InputObject $AssignmentData -MemberType NoteProperty -Name Eligible -Value $(($RoleMembers | Where-object{($_.Role -eq $RoleName) -and ($_.assignmentState -eq "Eligible")}).count)
     Add-Member -InputObject $AssignmentData -MemberType NoteProperty -Name Active -Value $(($RoleMembers | Where-object{($_.Role -eq $RoleName) -and ($_.assignmentState -eq "Active")}).count)
 
+    # Add graph for assignments eligible/active
     $strHTMLTextWithGraph = Add-DoughnutGraph -Data $AssignmentData -GraphTitle "Assignments" -DoughnutTitle "" -arrColors $arrColors 
     $strHTMLGraphs = $strHTMLGraphs + $strHTMLTextWithGraph
 
-
+    # Add array with for membertype
     $MemberTypeData = New-Object PSCustomObject
     $MemberTypes = (($RoleMembers | Where-object{($_.Role -eq $RoleName)}) | Select-Object -property membertype)
     $MemberTypesNames = ($MemberTypes | Select-Object -property membertype -Unique).membertype
@@ -2244,9 +2111,11 @@ Foreach ($RoleName in $RoleNames)
         Add-Member -InputObject $MemberTypeData -MemberType NoteProperty -Name $MemberType -Value $(($MemberTypes | Where-object{$_.membertype -eq $MemberType}).count)
     }
 
+    # Add graph for memberships
     $strHTMLTextWithGraph = Add-DoughnutGraph -Data $MemberTypeData -GraphTitle "Memberships" -DoughnutTitle "" -arrColors $arrColors 
     $strHTMLGraphs = $strHTMLGraphs + $strHTMLTextWithGraph
 
+    # Create array of types
     $TypeData = New-Object PSCustomObject
     $Types = (($RoleMembers | Where-object{($_.Role -eq $RoleName)}) | Select-Object -property type)
     $TypesNames = ($Types | Select-Object -property type -Unique).type
@@ -2255,12 +2124,23 @@ Foreach ($RoleName in $RoleNames)
         Add-Member -InputObject $TypeData -MemberType NoteProperty -Name $Type -Value $(($Types | Where-object{$_.type -eq $Type}).count)
     }
 
+    # Add graph for object types
     $strHTMLTextWithGraph = Add-DoughnutGraph -Data $TypeData -GraphTitle "Member object types" -DoughnutTitle "" -arrColors $arrColors 
     $strHTMLGraphs = $strHTMLGraphs + $strHTMLTextWithGraph + "`n"
     
+    # Create array of unique assignments
     $UniqueMemberData = New-Object PSCustomObject
     Add-Member -InputObject $UniqueMemberData -MemberType NoteProperty -Name "Unique" -Value $((($RoleMembers | Where-object{($_.Role -eq $RoleName)}) | Select-Object -property subjectid -Unique).count)
+    # Add graph for unique assignments
     $strHTMLTextWithGraph = Add-DoughnutGraph -Data $UniqueMemberData -GraphTitle "Unique assignments" -DoughnutTitle "" -arrColors $arrColors 
+    $strHTMLGraphs = $strHTMLGraphs + $strHTMLTextWithGraph + "`n"
+    
+    # Create array of nested members
+    $NestedMemberData = New-Object PSCustomObject
+    Add-Member -InputObject $NestedMemberData -MemberType NoteProperty -Name "Direct" -Value $((($RoleMembers | Where-object{($_.Role -eq $RoleName) -and ($_.NestedGroupdisplayName -eq $null)}) | Select-Object -property subjectid -Unique).count)
+    Add-Member -InputObject $NestedMemberData -MemberType NoteProperty -Name "Nested" -Value $((($RoleMembers | Where-object{($_.Role -eq $RoleName) -and ($_.NestedGroupdisplayName -ne $null)}) | Select-Object -property subjectid -Unique).count)
+    # Add graph for unique assignments
+    $strHTMLTextWithGraph = Add-DoughnutGraph -Data $NestedMemberData -GraphTitle "Nested members" -DoughnutTitle "" -arrColors $arrColors 
     $strHTMLGraphs = $strHTMLGraphs + $strHTMLTextWithGraph + "`n"
 
     $strHTMLRoleTable = ""
@@ -2274,7 +2154,10 @@ Foreach ($RoleName in $RoleNames)
 $NewHeader = @"
 <th onclick="w3.sortHTML('#myTable$iCount', '.item', 'td:nth-child($i)')" style="cursor:pointer">
 "@        
-        $NewtableHeaders = $NewtableHeaders + $tbHead.replace("<th>",$NewHeader) +"/"
+        if($tbHead.Length -gt 7)
+        {
+          $NewtableHeaders = $NewtableHeaders + $tbHead.replace("<th>",$NewHeader) +"/"
+        }
         $i++
     }
     $NewtableHeaders = $NewtableHeaders + "</tr>"
@@ -2291,3 +2174,4 @@ $iCount++
 
 }
 $strHTMLTextCurrent | Out-File -FilePath $("$HTMLFile") -Force
+
